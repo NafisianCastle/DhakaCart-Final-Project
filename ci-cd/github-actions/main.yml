@@ -1,0 +1,54 @@
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      # Set up Node.js for frontend & backend
+      - uses: actions/setup-node@v3
+        with:
+          node-version: 25
+
+      # Install frontend dependencies & test
+      - name: Frontend Install & Test
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run test
+
+      # Install backend dependencies & test
+      - name: Backend Install & Test
+        working-directory: backend
+        run: |
+          npm ci
+          npm test
+
+      - name: Build Docker Images
+        run: |
+          docker build -t dhakacart-frontend:latest ./frontend
+          docker build -t dhakacart-backend:latest ./backend
+      
+      - name: Set up Kubeconfig
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.34.0'
+
+      - name: Apply Kubernetes manifests
+        run: |
+          kubectl apply -f kubernetes/deployments/
+          kubectl apply -f kubernetes/services/
+          kubectl apply -f kubernetes/ingress/
+
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
