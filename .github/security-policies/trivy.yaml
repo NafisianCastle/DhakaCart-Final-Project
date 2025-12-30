@@ -1,0 +1,91 @@
+# Trivy Security Policy Configuration
+# This file defines security scanning policies for container images
+
+# Vulnerability scanning configuration
+vulnerability:
+  # Severity levels to check
+  severity:
+    - CRITICAL
+    - HIGH
+    - MEDIUM
+  
+  # Ignore unfixed vulnerabilities
+  ignore-unfixed: true
+  
+  # Exit code when vulnerabilities are found
+  exit-code: 1
+  
+  # Vulnerability types to scan
+  vuln-type:
+    - os
+    - library
+  
+  # Skip files/directories
+  skip-files:
+    - "**/*.md"
+    - "**/*.txt"
+    - "**/test/**"
+    - "**/tests/**"
+    - "**/__tests__/**"
+  
+  # Skip directories
+  skip-dirs:
+    - node_modules
+    - .git
+    - .github
+    - coverage
+    - dist
+    - build
+
+# Secret scanning configuration
+secret:
+  # Skip secret scanning for test files
+  skip-files:
+    - "**/*test*"
+    - "**/*spec*"
+    - "**/fixtures/**"
+    - "**/mocks/**"
+
+# License scanning configuration
+license:
+  # Forbidden licenses
+  forbidden:
+    - GPL-2.0
+    - GPL-3.0
+    - AGPL-1.0
+    - AGPL-3.0
+  
+  # Restricted licenses (warn but don't fail)
+  restricted:
+    - LGPL-2.1
+    - LGPL-3.0
+    - MPL-2.0
+
+# Misconfiguration scanning
+misconfig:
+  # Include Kubernetes manifests
+  include-non-failures: false
+  
+  # Severity levels for misconfigurations
+  severity:
+    - CRITICAL
+    - HIGH
+    - MEDIUM
+  
+  # Skip checks
+  skip-policy:
+    - DS002  # Allow root user in containers (handled by our security context)
+
+# Output configuration
+format:
+  - table
+  - sarif
+  - json
+
+# Cache configuration
+cache:
+  # Cache directory
+  cache-dir: /tmp/trivy-cache
+  
+  # Clear cache before scanning
+  clear-cache: false

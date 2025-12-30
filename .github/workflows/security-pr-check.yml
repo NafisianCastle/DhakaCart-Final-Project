@@ -1,0 +1,251 @@
+name: Security PR Check
+
+on:
+  pull_request:
+    branches: [ main, develop ]
+    types: [opened, synchronize, reopened]
+
+jobs:
+  security-check:
+    name: Security Check
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: read
+      security-events: write
+      pull-requests: write
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Full history for better analysis
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: |
+          frontend/package-lock.json
+          backend/package-lock.json
+
+    # Install dependencies for security scanning
+    - name: Install frontend dependencies
+      working-directory: ./frontend
+      run: npm ci
+
+    - name: Install backend dependencies
+      working-directory: ./backend
+      run: npm ci
+
+    # Run security-focused linting
+    - name: Run security linting (backend)
+      working-directory: ./backend
+      run: |
+        # Install security plugins if not already installed
+        npm install --save-dev eslint-plugin-security eslint-plugin-no-secrets
+        
+        # Run security-focused ESLint
+        npx eslint . --ext .js --config .eslintrc.security.js --format json --output-file security-lint-results.json || true
+        npx eslint . --ext .js --config .eslintrc.security.js || true
+
+    # Dependency vulnerability check
+    - name: Check for vulnerable dependencies
+      run: |
+        echo "Checking frontend dependencies..."
+        cd frontend
+        npm audit --audit-level=high --json > ../frontend-audit.json || true
+        npm audit --audit-level=high || echo "Frontend vulnerabilities found"
+        
+        echo "Checking backend dependencies..."
+        cd ../backend
+        npm audit --audit-level=high --json > ../backend-audit.json || true
+        npm audit --audit-level=high || echo "Backend vulnerabilities found"
+
+    # Secret scanning with TruffleHog
+    - name: Run TruffleHog secret scan
+      uses: trufflesecurity/trufflehog@main
+      with:
+        path: ./
+        base: ${{ github.event.repository.default_branch }}
+        head: HEAD
+        extra_args: --debug --only-verified --json --output trufflehog-results.json
+
+    # Container security scanning
+    - name: Build images for security scan
+      run: |
+        docker build -t dhakacart/frontend:pr-scan ./frontend
+        docker build -t dhakacart/backend:pr-scan ./backend
+
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'image'
+        image-ref: 'dhakacart/frontend:pr-scan'
+        format: 'sarif'
+        output: 'trivy-frontend-results.sarif'
+
+    - name: Run Trivy vulnerability scanner (backend)
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'image'
+        image-ref: 'dhakacart/backend:pr-scan'
+        format: 'sarif'
+        output: 'trivy-backend-results.sarif'
+
+    # Upload security scan results
+    - name: Upload Trivy scan results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v2
+      if: always()
+      with:
+        sarif_file: 'trivy-frontend-results.sarif'
+
+    - name: Upload Trivy scan results to GitHub Security tab (backend)
+      uses: github/codeql-action/upload-sarif@v2
+      if: always()
+      with:
+        sarif_file: 'trivy-backend-results.sarif'
+
+    # Infrastructure security check
+    - name: Run Checkov
+      id: checkov
+      uses: bridgecrewio/checkov-action@master
+      with:
+        directory: .
+        framework: dockerfile,kubernetes,terraform
+        output_format: sarif
+        output_file_path: checkov-results.sarif
+        quiet: true
+        soft_fail: true
+
+    - name: Upload Checkov scan results
+      uses: github/codeql-action/upload-sarif@v2
+      if: always()
+      with:
+        sarif_file: checkov-results.sarif
+
+    # Generate security report comment
+    - name: Generate security report
+      if: always()
+      run: |
+        echo "# 🔒 Security Scan Results" > security-report.md
+        echo "" >> security-report.md
+        echo "This PR has been automatically scanned for security vulnerabilities." >> security-report.md
+        echo "" >> security-report.md
+        
+        # Check for high/critical vulnerabilities in dependencies
+        if [ -f "frontend-audit.json" ]; then
+          HIGH_VULN_FRONTEND=$(jq '.metadata.vulnerabilities.high // 0' frontend-audit.json)
+          CRITICAL_VULN_FRONTEND=$(jq '.metadata.vulnerabilities.critical // 0' frontend-audit.json)
+          echo "## Frontend Dependencies" >> security-report.md
+          echo "- Critical vulnerabilities: $CRITICAL_VULN_FRONTEND" >> security-report.md
+          echo "- High vulnerabilities: $HIGH_VULN_FRONTEND" >> security-report.md
+          echo "" >> security-report.md
+        fi
+        
+        if [ -f "backend-audit.json" ]; then
+          HIGH_VULN_BACKEND=$(jq '.metadata.vulnerabilities.high // 0' backend-audit.json)
+          CRITICAL_VULN_BACKEND=$(jq '.metadata.vulnerabilities.critical // 0' backend-audit.json)
+          echo "## Backend Dependencies" >> security-report.md
+          echo "- Critical vulnerabilities: $CRITICAL_VULN_BACKEND" >> security-report.md
+          echo "- High vulnerabilities: $HIGH_VULN_BACKEND" >> security-report.md
+          echo "" >> security-report.md
+        fi
+        
+        # Check for secrets
+        if [ -f "trufflehog-results.json" ]; then
+          SECRET_COUNT=$(jq '. | length' trufflehog-results.json 2>/dev/null || echo "0")
+          echo "## Secret Scanning" >> security-report.md
+          echo "- Potential secrets found: $SECRET_COUNT" >> security-report.md
+          echo "" >> security-report.md
+        fi
+        
+        echo "## Container Security" >> security-report.md
+        echo "Container images have been scanned for vulnerabilities. Check the Security tab for detailed results." >> security-report.md
+        echo "" >> security-report.md
+        
+        echo "## Infrastructure Security" >> security-report.md
+        echo "Infrastructure configurations have been scanned for misconfigurations. Check the Security tab for detailed results." >> security-report.md
+        echo "" >> security-report.md
+        
+        echo "---" >> security-report.md
+        echo "*This report was generated automatically. For questions, contact the security team.*" >> security-report.md
+
+    # Comment on PR with security results
+    - name: Comment PR with security results
+      uses: actions/github-script@v6
+      if: always()
+      with:
+        script: |
+          const fs = require('fs');
+          
+          let comment = '';
+          try {
+            comment = fs.readFileSync('security-report.md', 'utf8');
+          } catch (error) {
+            comment = '# 🔒 Security Scan Results\n\nSecurity scan completed. Please check the Actions tab for detailed results.';
+          }
+          
+          // Find existing security comment
+          const { data: comments } = await github.rest.issues.listComments({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+          });
+          
+          const existingComment = comments.find(comment => 
+            comment.body.includes('🔒 Security Scan Results')
+          );
+          
+          if (existingComment) {
+            // Update existing comment
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: existingComment.id,
+              body: comment
+            });
+          } else {
+            // Create new comment
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: comment
+            });
+          }
+
+    # Fail if critical vulnerabilities found
+    - name: Check for critical security issues
+      run: |
+        CRITICAL_ISSUES=0
+        
+        # Check for critical dependency vulnerabilities
+        if [ -f "frontend-audit.json" ]; then
+          CRITICAL_FRONTEND=$(jq '.metadata.vulnerabilities.critical // 0' frontend-audit.json)
+          CRITICAL_ISSUES=$((CRITICAL_ISSUES + CRITICAL_FRONTEND))
+        fi
+        
+        if [ -f "backend-audit.json" ]; then
+          CRITICAL_BACKEND=$(jq '.metadata.vulnerabilities.critical // 0' backend-audit.json)
+          CRITICAL_ISSUES=$((CRITICAL_ISSUES + CRITICAL_BACKEND))
+        fi
+        
+        # Check for verified secrets
+        if [ -f "trufflehog-results.json" ]; then
+          SECRET_COUNT=$(jq '. | length' trufflehog-results.json 2>/dev/null || echo "0")
+          if [ "$SECRET_COUNT" -gt 0 ]; then
+            echo "❌ Verified secrets found in the code!"
+            echo "Please remove all secrets before merging this PR."
+            exit 1
+          fi
+        fi
+        
+        if [ "$CRITICAL_ISSUES" -gt 0 ]; then
+          echo "❌ Critical security vulnerabilities found!"
+          echo "Please fix all critical vulnerabilities before merging this PR."
+          exit 1
+        fi
+        
+        echo "✅ No critical security issues found."

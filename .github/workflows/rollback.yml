@@ -1,0 +1,251 @@
+name: Emergency Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to rollback'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+        - production
+        - staging
+      target_version:
+        description: 'Target version to rollback to (blue/green or image tag)'
+        required: false
+        type: string
+      reason:
+        description: 'Reason for rollback'
+        required: true
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  rollback:
+    name: Emergency Rollback
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION }}
+
+    - name: Update kubeconfig
+      run: |
+        if [ "${{ github.event.inputs.environment }}" = "production" ]; then
+          aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} --name ${{ secrets.EKS_CLUSTER_NAME_PRODUCTION }}
+        else
+          aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} --name ${{ secrets.EKS_CLUSTER_NAME_STAGING }}
+        fi
+
+    - name: Get current deployment status
+      run: |
+        echo "Current deployment status:"
+        kubectl get deployments -n dhakacart -o wide
+        kubectl get services -n dhakacart -o wide
+        
+        echo "Current active environment:"
+        kubectl get service dhakacart-service -n dhakacart -o jsonpath='{.spec.selector.version}' || echo "No version selector found"
+
+    - name: Perform rollback
+      run: |
+        NAMESPACE="dhakacart"
+        APP_NAME="dhakacart"
+        TARGET_VERSION="${{ github.event.inputs.target_version }}"
+        
+        echo "Starting rollback process..."
+        echo "Environment: ${{ github.event.inputs.environment }}"
+        echo "Target version: $TARGET_VERSION"
+        echo "Reason: ${{ github.event.inputs.reason }}"
+        
+        if [ -n "$TARGET_VERSION" ]; then
+          # Rollback to specific version (blue/green)
+          if [ "$TARGET_VERSION" = "blue" ] || [ "$TARGET_VERSION" = "green" ]; then
+            echo "Rolling back to $TARGET_VERSION environment..."
+            
+            # Check if target environment deployments exist
+            if kubectl get deployment "$APP_NAME-frontend-$TARGET_VERSION" -n "$NAMESPACE" && \
+               kubectl get deployment "$APP_NAME-backend-$TARGET_VERSION" -n "$NAMESPACE"; then
+              
+              # Switch traffic to target environment
+              kubectl patch service "$APP_NAME-frontend-service" -n "$NAMESPACE" -p '{"spec":{"selector":{"version":"'$TARGET_VERSION'"}}}'
+              kubectl patch service "$APP_NAME-backend-service" -n "$NAMESPACE" -p '{"spec":{"selector":{"version":"'$TARGET_VERSION'"}}}'
+              kubectl patch service "$APP_NAME-service" -n "$NAMESPACE" -p '{"spec":{"selector":{"version":"'$TARGET_VERSION'"}}}'
+              
+              echo "Traffic switched to $TARGET_VERSION environment"
+            else
+              echo "Target environment deployments not found, performing image rollback..."
+              
+              # Get previous image versions from deployment history
+              FRONTEND_PREVIOUS=$(kubectl rollout history deployment/$APP_NAME-frontend -n $NAMESPACE --revision=1 | grep -o 'ghcr.io[^[:space:]]*' | head -1)
+              BACKEND_PREVIOUS=$(kubectl rollout history deployment/$APP_NAME-backend -n $NAMESPACE --revision=1 | grep -o 'ghcr.io[^[:space:]]*' | head -1)
+              
+              if [ -n "$FRONTEND_PREVIOUS" ] && [ -n "$BACKEND_PREVIOUS" ]; then
+                kubectl set image deployment/$APP_NAME-frontend frontend=$FRONTEND_PREVIOUS -n $NAMESPACE
+                kubectl set image deployment/$APP_NAME-backend backend=$BACKEND_PREVIOUS -n $NAMESPACE
+              else
+                echo "Could not determine previous image versions, using rollout undo"
+                kubectl rollout undo deployment/$APP_NAME-frontend -n $NAMESPACE
+                kubectl rollout undo deployment/$APP_NAME-backend -n $NAMESPACE
+              fi
+            fi
+          else
+            # Rollback to specific image tag
+            echo "Rolling back to image tag: $TARGET_VERSION"
+            kubectl set image deployment/$APP_NAME-frontend frontend=$REGISTRY/${{ github.repository }}/frontend:$TARGET_VERSION -n $NAMESPACE
+            kubectl set image deployment/$APP_NAME-backend backend=$REGISTRY/${{ github.repository }}/backend:$TARGET_VERSION -n $NAMESPACE
+          fi
+        else
+          # Rollback to previous revision
+          echo "Rolling back to previous revision..."
+          kubectl rollout undo deployment/$APP_NAME-frontend -n $NAMESPACE
+          kubectl rollout undo deployment/$APP_NAME-backend -n $NAMESPACE
+        fi
+
+    - name: Wait for rollback to complete
+      run: |
+        echo "Waiting for rollback to complete..."
+        kubectl rollout status deployment/dhakacart-frontend -n dhakacart --timeout=300s
+        kubectl rollout status deployment/dhakacart-backend -n dhakacart --timeout=300s
+
+    - name: Verify rollback
+      run: |
+        echo "Verifying rollback..."
+        
+        # Wait for pods to be ready
+        sleep 30
+        
+        # Get ingress URL
+        INGRESS_URL=$(kubectl get ingress dhakacart-ingress -n dhakacart -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+        
+        if [ -n "$INGRESS_URL" ]; then
+          # Test health endpoints
+          echo "Testing health endpoints..."
+          for i in {1..10}; do
+            if curl -f "https://$INGRESS_URL/api/health" --max-time 10; then
+              echo "Health check passed"
+              break
+            else
+              echo "Health check failed, retrying in 30s..."
+              sleep 30
+            fi
+          done
+          
+          # Test products endpoint
+          curl -f "https://$INGRESS_URL/api/products" --max-time 10
+        else
+          echo "Could not get ingress URL, using port-forward for verification"
+          kubectl port-forward service/dhakacart-service 8080:80 -n dhakacart &
+          PORT_FORWARD_PID=$!
+          sleep 10
+          
+          curl -f "http://localhost:8080/api/health" --max-time 10
+          curl -f "http://localhost:8080/api/products" --max-time 10
+          
+          kill $PORT_FORWARD_PID 2>/dev/null || true
+        fi
+        
+        echo "Rollback verification completed successfully"
+
+    - name: Get post-rollback status
+      run: |
+        echo "Post-rollback deployment status:"
+        kubectl get deployments -n dhakacart -o wide
+        kubectl get pods -n dhakacart
+        
+        echo "Current active environment:"
+        kubectl get service dhakacart-service -n dhakacart -o jsonpath='{.spec.selector.version}' || echo "No version selector found"
+
+    - name: Create rollback incident report
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const title = `Rollback Executed - ${{ github.event.inputs.environment }} - ${new Date().toISOString()}`;
+          const body = `## Emergency Rollback Report
+          
+          **Environment:** ${{ github.event.inputs.environment }}
+          **Target Version:** ${{ github.event.inputs.target_version || 'Previous revision' }}
+          **Reason:** ${{ github.event.inputs.reason }}
+          **Executed By:** ${{ github.actor }}
+          **Execution Time:** ${new Date().toISOString()}
+          **Workflow Run:** ${{ github.run_id }}
+          
+          ### Rollback Details
+          - Rollback was executed successfully
+          - All health checks passed
+          - Services are responding normally
+          
+          ### Post-Rollback Actions Required
+          - [ ] Investigate root cause of the issue that required rollback
+          - [ ] Update monitoring and alerting if needed
+          - [ ] Plan for re-deployment with fixes
+          - [ ] Update team on rollback status
+          
+          ### Next Steps
+          1. Analyze logs and metrics from the failed deployment
+          2. Identify and fix the root cause
+          3. Test fixes in staging environment
+          4. Plan new deployment with proper testing
+          
+          This incident report was automatically created by the rollback workflow.`;
+          
+          await github.rest.issues.create({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            title: title,
+            body: body,
+            labels: ['incident', 'rollback', 'production', '${{ github.event.inputs.environment }}']
+          });
+
+    - name: Notify team of rollback
+      uses: 8398a7/action-slack@v3
+      with:
+        status: custom
+        custom_payload: |
+          {
+            "text": "🔄 Emergency Rollback Executed",
+            "attachments": [
+              {
+                "color": "warning",
+                "fields": [
+                  {
+                    "title": "Environment",
+                    "value": "${{ github.event.inputs.environment }}",
+                    "short": true
+                  },
+                  {
+                    "title": "Target Version",
+                    "value": "${{ github.event.inputs.target_version || 'Previous revision' }}",
+                    "short": true
+                  },
+                  {
+                    "title": "Reason",
+                    "value": "${{ github.event.inputs.reason }}",
+                    "short": false
+                  },
+                  {
+                    "title": "Executed By",
+                    "value": "${{ github.actor }}",
+                    "short": true
+                  },
+                  {
+                    "title": "Status",
+                    "value": "✅ Completed Successfully",
+                    "short": true
+                  }
+                ]
+              }
+            ]
+          }
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

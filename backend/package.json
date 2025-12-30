@@ -4,7 +4,13 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "test": "jest --coverage",
+    "test:watch": "jest --watch",
+    "test:ci": "jest --coverage --ci --watchAll=false",
+    "lint": "eslint . --ext .js",
+    "lint:fix": "eslint . --ext .js --fix",
     "migrate": "node-pg-migrate",
     "migrate:up": "node-pg-migrate up",
     "migrate:down": "node-pg-migrate down",
@@ -26,5 +32,32 @@
     "uuid": "^9.0.1",
     "redis": "^4.6.0",
     "node-pg-migrate": "^7.0.2"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "supertest": "^6.3.3",
+    "eslint": "^8.57.0",
+    "eslint-plugin-security": "^1.7.1",
+    "eslint-plugin-no-secrets": "^0.8.9",
+    "nodemon": "^3.0.2",
+    "@types/jest": "^29.5.8"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "collectCoverageFrom": [
+      "**/*.js",
+      "!node_modules/**",
+      "!coverage/**",
+      "!migrations/**"
+    ],
+    "coverageReporters": [
+      "text",
+      "lcov",
+      "html"
+    ],
+    "testMatch": [
+      "**/__tests__/**/*.js",
+      "**/?(*.)+(spec|test).js"
+    ]
   }
 }

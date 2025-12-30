@@ -337,3 +337,6 @@ process.on('unhandledRejection', (reason, promise) => {
   });
   process.exit(1);
 });
+
+// Export app for testing
+module.exports = app;

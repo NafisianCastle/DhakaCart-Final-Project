@@ -5,7 +5,59 @@
 
 version: 2
 updates:
-  - package-ecosystem: "npm" # See documentation for possible values
-    directory: "/frontend/" # Location of package manifests
+  # Frontend dependencies
+  - package-ecosystem: "npm"
+    directory: "/frontend/"
     schedule:
       interval: "weekly"
+      day: "monday"
+      time: "09:00"
+    open-pull-requests-limit: 5
+    reviewers:
+      - "dhakacart-team"
+    assignees:
+      - "dhakacart-team"
+    commit-message:
+      prefix: "chore(frontend)"
+      include: "scope"
+
+  # Backend dependencies
+  - package-ecosystem: "npm"
+    directory: "/backend/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+    open-pull-requests-limit: 5
+    reviewers:
+      - "dhakacart-team"
+    assignees:
+      - "dhakacart-team"
+    commit-message:
+      prefix: "chore(backend)"
+      include: "scope"
+
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "chore(ci)"
+      include: "scope"
+
+  # Docker dependencies
+  - package-ecosystem: "docker"
+    directory: "/frontend/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+
+  - package-ecosystem: "docker"
+    directory: "/backend/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2

@@ -150,6 +150,7 @@
 
 
 
+
   - Deploy Prometheus and Grafana using Helm charts
   - Implement ELK stack (Elasticsearch, Logstash, Kibana) for log aggregation
   - Create custom dashboards and alerting rules
@@ -180,25 +181,36 @@
   - Create runbooks and alert documentation for common scenarios
   - _Requirements: 3.2, 7.2, 7.3_
 
-- [ ] 6. Implement CI/CD pipeline with GitHub Actions
+- [x] 6. Implement CI/CD pipeline with GitHub Actions
+
+
+
+
+
   - Create automated build pipeline for container images
   - Implement blue-green deployment strategy with automated rollback
   - Add security scanning and testing stages to pipeline
   - _Requirements: 2.1, 2.2, 2.3, 4.5_
 
-- [ ] 6.1 Create automated build and test pipeline
+- [x] 6.1 Create automated build and test pipeline
+
+
   - Write GitHub Actions workflow for building and pushing container images
   - Implement automated testing stages (unit, integration, security)
   - Add code quality checks and dependency vulnerability scanning
   - _Requirements: 2.1, 4.5_
 
-- [ ] 6.2 Implement blue-green deployment strategy
+- [x] 6.2 Implement blue-green deployment strategy
+
+
   - Create deployment scripts for zero-downtime blue-green deployments
   - Implement automated health checks and traffic switching
   - Add automatic rollback mechanism for failed deployments
   - _Requirements: 2.2, 2.3_
 
-- [ ] 6.3 Add security scanning to CI/CD pipeline
+- [x] 6.3 Add security scanning to CI/CD pipeline
+
+
   - Integrate container image scanning with Trivy or Snyk
   - Add dependency vulnerability scanning for Node.js and React
   - Implement infrastructure security scanning with Checkov

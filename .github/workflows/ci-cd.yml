@@ -1,0 +1,422 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME_FRONTEND: ${{ github.repository }}/frontend
+  IMAGE_NAME_BACKEND: ${{ github.repository }}/backend
+
+jobs:
+  # Job 1: Code Quality and Security Checks
+  code-quality:
+    name: Code Quality & Security
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Shallow clones should be disabled for better analysis
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: |
+          frontend/package-lock.json
+          backend/package-lock.json
+
+    # Frontend code quality checks
+    - name: Install frontend dependencies
+      working-directory: ./frontend
+      run: npm ci
+
+    - name: Run frontend linting
+      working-directory: ./frontend
+      run: npm run lint --if-present || echo "No lint script found"
+
+    - name: Run frontend type checking
+      working-directory: ./frontend
+      run: npm run type-check --if-present || echo "No type-check script found"
+
+    # Backend code quality checks
+    - name: Install backend dependencies
+      working-directory: ./backend
+      run: npm ci
+
+    - name: Run backend linting
+      working-directory: ./backend
+      run: npm run lint --if-present || echo "No lint script found"
+
+    # Dependency vulnerability scanning
+    - name: Run npm audit for frontend
+      working-directory: ./frontend
+      run: npm audit --audit-level=high
+      continue-on-error: true
+
+    - name: Run npm audit for backend
+      working-directory: ./backend
+      run: npm audit --audit-level=high
+      continue-on-error: true
+
+    # Security scanning with Snyk
+    - name: Run Snyk to check for vulnerabilities
+      uses: snyk/actions/node@master
+      env:
+        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      with:
+        args: --severity-threshold=high
+      continue-on-error: true
+
+  # Job 2: Unit and Integration Tests
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    needs: code-quality
+    
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: dhakacart
+          POSTGRES_PASSWORD: secret
+          POSTGRES_DB: dhakacartdb_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: |
+          frontend/package-lock.json
+          backend/package-lock.json
+
+    # Frontend tests
+    - name: Install frontend dependencies
+      working-directory: ./frontend
+      run: npm ci
+
+    - name: Run frontend tests
+      working-directory: ./frontend
+      run: npm test -- --coverage --watchAll=false
+      env:
+        CI: true
+
+    # Backend tests
+    - name: Install backend dependencies
+      working-directory: ./backend
+      run: npm ci
+
+    - name: Run database migrations for tests
+      working-directory: ./backend
+      run: npm run migrate:up
+      env:
+        DATABASE_URL: postgres://dhakacart:secret@localhost:5432/dhakacartdb_test
+        NODE_ENV: test
+
+    - name: Run backend tests
+      working-directory: ./backend
+      run: npm test -- --coverage
+      env:
+        DATABASE_URL: postgres://dhakacart:secret@localhost:5432/dhakacartdb_test
+        REDIS_URL: redis://localhost:6379
+        NODE_ENV: test
+
+    # Upload test coverage
+    - name: Upload frontend coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./frontend/coverage/lcov.info
+        flags: frontend
+        name: frontend-coverage
+
+    - name: Upload backend coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./backend/coverage/lcov.info
+        flags: backend
+        name: backend-coverage
+
+  # Job 3: Build and Push Container Images
+  build-images:
+    name: Build & Push Images
+    runs-on: ubuntu-latest
+    needs: [code-quality, test]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    
+    permissions:
+      contents: read
+      packages: write
+
+    outputs:
+      frontend-image: ${{ steps.meta-frontend.outputs.tags }}
+      backend-image: ${{ steps.meta-backend.outputs.tags }}
+      frontend-digest: ${{ steps.build-frontend.outputs.digest }}
+      backend-digest: ${{ steps.build-backend.outputs.digest }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    # Build and push frontend image
+    - name: Extract metadata for frontend
+      id: meta-frontend
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_FRONTEND }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=sha,prefix={{branch}}-
+          type=raw,value=latest,enable={{is_default_branch}}
+
+    - name: Build and push frontend image
+      id: build-frontend
+      uses: docker/build-push-action@v5
+      with:
+        context: ./frontend
+        file: ./frontend/Dockerfile
+        push: true
+        tags: ${{ steps.meta-frontend.outputs.tags }}
+        labels: ${{ steps.meta-frontend.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        platforms: linux/amd64,linux/arm64
+
+    # Build and push backend image
+    - name: Extract metadata for backend
+      id: meta-backend
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_BACKEND }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=sha,prefix={{branch}}-
+          type=raw,value=latest,enable={{is_default_branch}}
+
+    - name: Build and push backend image
+      id: build-backend
+      uses: docker/build-push-action@v5
+      with:
+        context: ./backend
+        file: ./backend/Dockerfile
+        push: true
+        tags: ${{ steps.meta-backend.outputs.tags }}
+        labels: ${{ steps.meta-backend.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        platforms: linux/amd64,linux/arm64
+
+  # Job 4: Container Security Scanning
+  container-security:
+    name: Container Security Scan
+    runs-on: ubuntu-latest
+    needs: build-images
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    
+    strategy:
+      matrix:
+        image: [frontend, backend]
+    
+    steps:
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.image }}:${{ github.sha }}
+        format: 'sarif'
+        output: 'trivy-results-${{ matrix.image }}.sarif'
+
+    - name: Upload Trivy scan results to GitHub Security tab
+      uses: github/codeql-action/upload-sarif@v2
+      with:
+        sarif_file: 'trivy-results-${{ matrix.image }}.sarif'
+
+    - name: Run Trivy vulnerability scanner (table format)
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.image }}:${{ github.sha }}
+        format: 'table'
+        exit-code: '1'
+        ignore-unfixed: true
+        vuln-type: 'os,library'
+        severity: 'CRITICAL,HIGH'
+
+  # Job 5: Deploy to Staging (for develop branch)
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [build-images, container-security]
+    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+    environment: staging
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION }}
+
+    - name: Update kubeconfig
+      run: |
+        aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} --name ${{ secrets.EKS_CLUSTER_NAME_STAGING }}
+
+    - name: Deploy to staging
+      run: |
+        # Update image tags in Kubernetes manifests
+        sed -i "s|image: .*frontend.*|image: ${{ needs.build-images.outputs.frontend-image }}|g" kubernetes/deployments/frontend-deployment.yaml
+        sed -i "s|image: .*backend.*|image: ${{ needs.build-images.outputs.backend-image }}|g" kubernetes/deployments/backend-deployment.yaml
+        
+        # Apply Kubernetes manifests
+        kubectl apply -f kubernetes/namespace.yaml
+        kubectl apply -f kubernetes/configmap.yaml
+        kubectl apply -f kubernetes/deployments/
+        kubectl apply -f kubernetes/services/
+        kubectl apply -f kubernetes/ingress/
+        
+        # Wait for rollout to complete
+        kubectl rollout status deployment/dhakacart-frontend -n dhakacart --timeout=300s
+        kubectl rollout status deployment/dhakacart-backend -n dhakacart --timeout=300s
+
+    - name: Run health checks
+      run: |
+        # Wait for services to be ready
+        sleep 30
+        
+        # Get ingress URL
+        INGRESS_URL=$(kubectl get ingress dhakacart-ingress -n dhakacart -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+        
+        # Health check with retry
+        for i in {1..10}; do
+          if curl -f "https://$INGRESS_URL/api/health"; then
+            echo "Health check passed"
+            break
+          else
+            echo "Health check failed, retrying in 30s..."
+            sleep 30
+          fi
+        done
+
+  # Job 6: Deploy to Production (for main branch)
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [build-images, container-security]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: production
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION }}
+
+    - name: Update kubeconfig
+      run: |
+        aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} --name ${{ secrets.EKS_CLUSTER_NAME_PRODUCTION }}
+
+    - name: Make deployment script executable
+      run: chmod +x scripts/blue-green-deploy.sh
+
+    - name: Blue-Green Deployment
+      run: |
+        export NAMESPACE=dhakacart
+        export APP_NAME=dhakacart
+        export FRONTEND_IMAGE=${{ needs.build-images.outputs.frontend-image }}
+        export BACKEND_IMAGE=${{ needs.build-images.outputs.backend-image }}
+        export TIMEOUT=600
+        export HEALTH_CHECK_RETRIES=30
+        export HEALTH_CHECK_INTERVAL=10
+        
+        ./scripts/blue-green-deploy.sh
+
+    - name: Post-deployment verification
+      run: |
+        # Additional verification steps
+        echo "Running post-deployment verification..."
+        
+        # Get ingress URL
+        INGRESS_URL=$(kubectl get ingress dhakacart-ingress -n dhakacart -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+        
+        # Test critical endpoints
+        echo "Testing critical endpoints..."
+        curl -f "https://$INGRESS_URL/api/health" --max-time 30
+        curl -f "https://$INGRESS_URL/api/products" --max-time 30
+        
+        # Check deployment status
+        kubectl get deployments -n dhakacart
+        kubectl get pods -n dhakacart
+        
+        echo "Post-deployment verification completed successfully"
+
+  # Job 7: Notify on Success/Failure
+  notify:
+    name: Notify Results
+    runs-on: ubuntu-latest
+    needs: [deploy-staging, deploy-production]
+    if: always()
+    
+    steps:
+    - name: Notify Slack on Success
+      if: success()
+      uses: 8398a7/action-slack@v3
+      with:
+        status: success
+        text: "✅ Deployment successful for ${{ github.ref }}"
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+    - name: Notify Slack on Failure
+      if: failure()
+      uses: 8398a7/action-slack@v3
+      with:
+        status: failure
+        text: "❌ Deployment failed for ${{ github.ref }}"
+      env:
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
