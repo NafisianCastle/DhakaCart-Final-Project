@@ -22,6 +22,14 @@ import OrderHistoryPage from './pages/OrderHistoryPage';
 import WishlistPage from './pages/WishlistPage';
 import AddressBookPage from './pages/AddressBookPage';
 
+// Admin Pages
+import AdminLoginPage from './pages/AdminLoginPage';
+import AdminDashboardPage from './pages/AdminDashboardPage';
+import AdminProductsPage from './pages/AdminProductsPage';
+import AdminOrdersPage from './pages/AdminOrdersPage';
+import AdminUsersPage from './pages/AdminUsersPage';
+import AdminProductFormPage from './pages/AdminProductFormPage';
+
 // Placeholder components for routes (to be implemented in later subtasks)
 const AboutPage = () => <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><h1 style={{ fontSize: '1.5rem' }}>About Page - Coming Soon</h1></div>;
 const ContactPage = () => <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><h1 style={{ fontSize: '1.5rem' }}>Contact Page - Coming Soon</h1></div>;
@@ -129,6 +137,15 @@ function App() {
             <Route path="/wishlist" element={<WishlistPage updateCartCount={updateCartCount} />} />
             <Route path="/addresses" element={<AddressBookPage />} />
             <Route path="/account" element={<AccountPage />} />
+
+            {/* Admin Routes */}
+            <Route path="/admin/login" element={<AdminLoginPage />} />
+            <Route path="/admin/dashboard" element={<AdminDashboardPage />} />
+            <Route path="/admin/products" element={<AdminProductsPage />} />
+            <Route path="/admin/products/new" element={<AdminProductFormPage />} />
+            <Route path="/admin/products/:id/edit" element={<AdminProductFormPage />} />
+            <Route path="/admin/orders" element={<AdminOrdersPage />} />
+            <Route path="/admin/users" element={<AdminUsersPage />} />
           </Routes>
         </main>
 
