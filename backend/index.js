@@ -1,5 +1,6 @@
 const express = require("express");
 const { Pool } = require("pg");
+const rateLimit = require("express-rate-limit");
 require("dotenv").config();
 
 const app = express();
@@ -13,7 +14,17 @@ const pool = new Pool({
   port: process.env.DB_PORT,
 });
 
-app.get("/health", async (req, res) => {
+const productsLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // limit each IP to 100 requests per windowMs for /products
+});
+
+const healthLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 60, // limit each IP to 60 health check requests per minute
+});
+
+app.get("/health", healthLimiter, async (req, res) => {
   try {
     await pool.query("SELECT 1");
     res.json({ status: "OK", db: "connected" });
@@ -22,7 +33,7 @@ app.get("/health", async (req, res) => {
   }
 });
 
-app.get("/products", async (req, res) => {
+app.get("/products", productsLimiter, async (req, res) => {
   const result = await pool.query("SELECT * FROM products");
   res.json(result.rows);
 });
