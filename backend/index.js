@@ -1,4 +1,5 @@
 const express = require("express");
+const http = require("http");
 const rateLimit = require("express-rate-limit");
 const logger = require('./logger');
 const { register, databaseConnectionsTotal, databaseConnectionsActive, databaseQueryDuration, businessMetrics } = require('./metrics');
@@ -6,14 +7,19 @@ const { correlationIdMiddleware, requestLoggingMiddleware, errorLoggingMiddlewar
 const HealthChecker = require('./health');
 const RedisConnectionPool = require('./redis');
 const DatabaseConnectionPool = require('./database');
+const WebSocketService = require('./services/websocketService');
+const EmailService = require('./services/emailService');
+const EmailSchedulerService = require('./services/emailSchedulerService');
 const { router: authRoutes, initializeController: initializeAuthController } = require('./routes/auth');
 const { router: productRoutes, initializeController: initializeProductController } = require('./routes/products');
 const { router: cartRoutes, initializeController: initializeCartController } = require('./routes/cart');
 const { router: paymentRoutes, initializeController: initializePaymentController } = require('./routes/payments');
 const { router: adminRoutes, initializeController: initializeAdminController } = require('./routes/admin');
+const { router: emailRoutes, initializeController: initializeEmailController } = require('./routes/email');
 require("dotenv").config();
 
 const app = express();
+const server = http.createServer(app);
 
 // Middleware setup
 app.use(express.json());
@@ -24,18 +30,39 @@ app.use(requestLoggingMiddleware);
 const dbPool = new DatabaseConnectionPool();
 let pool = null;
 
+// Redis connection pool initialization
+const redisPool = new RedisConnectionPool();
+let redisClient = null;
+
+// WebSocket service initialization
+const webSocketService = new WebSocketService();
+
+// Email service initialization
+const emailService = new EmailService();
+
+// Email scheduler service initialization
+let emailSchedulerService = null;
+
 // Initialize database connection
 (async () => {
   try {
     pool = await dbPool.initialize();
     logger.info('Database connection pool initialized successfully');
 
+    // Initialize email service
+    await emailService.initialize();
+
+    // Initialize email scheduler service
+    emailSchedulerService = new EmailSchedulerService(dbPool, emailService);
+    emailSchedulerService.start();
+
     // Initialize auth controller after database is ready
-    initializeAuthController(dbPool, redisPool);
-    initializeProductController(dbPool, redisPool);
-    initializeCartController(dbPool, redisPool);
-    initializePaymentController(dbPool, redisPool);
-    initializeAdminController(dbPool, redisPool);
+    initializeAuthController(dbPool, redisPool, webSocketService, emailService);
+    initializeProductController(dbPool, redisPool, webSocketService, emailService);
+    initializeCartController(dbPool, redisPool, webSocketService, emailService);
+    initializePaymentController(dbPool, redisPool, webSocketService, emailService);
+    initializeAdminController(dbPool, redisPool, webSocketService, emailService);
+    initializeEmailController(dbPool, redisPool, webSocketService, emailService);
   } catch (error) {
     logger.error('Failed to initialize database connection pool', { error: error.message });
     process.exit(1);
@@ -276,6 +303,9 @@ app.use('/api/payments', paymentRoutes);
 // Mount admin routes
 app.use('/api/admin', adminRoutes);
 
+// Mount email routes
+app.use('/api/email', emailRoutes);
+
 // Error handling middleware (must be last)
 app.use(errorLoggingMiddleware);
 
@@ -286,6 +316,9 @@ const server = app.listen(5000, () => {
     nodeVersion: process.version,
     redisEnabled: !!redisPool
   });
+
+  // Initialize WebSocket service after server starts
+  webSocketService.initialize(server, dbPool, redisPool);
 });
 
 // Graceful shutdown handling
@@ -331,7 +364,15 @@ const gracefulShutdown = (signal) => {
       }) :
       Promise.resolve();
 
-    Promise.all([dbClosePromise, redisClosePromise]).then(() => {
+    // Stop email scheduler
+    const emailSchedulerClosePromise = emailSchedulerService ?
+      Promise.resolve().then(() => {
+        emailSchedulerService.stop();
+        logger.info('Email scheduler service stopped');
+      }) :
+      Promise.resolve();
+
+    Promise.all([dbClosePromise, redisClosePromise, emailSchedulerClosePromise]).then(() => {
       logger.info('Graceful shutdown completed');
       process.exit(0);
     });

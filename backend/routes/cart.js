@@ -15,8 +15,8 @@ const router = express.Router();
 // Initialize controller - will be set when routes are mounted
 let cartController = null;
 
-const initializeController = (dbPool, redisPool) => {
-    cartController = new CartController(dbPool, redisPool);
+const initializeController = (dbPool, redisPool, webSocketService = null, emailService = null) => {
+    cartController = new CartController(dbPool, redisPool, webSocketService, emailService);
 };
 
 // Apply rate limiting before authentication/authorization

@@ -18,8 +18,8 @@ const router = express.Router();
 // Initialize controller - will be set when routes are mounted
 let adminController = null;
 
-const initializeController = (dbPool, redisPool) => {
-    adminController = new AdminController(dbPool, redisPool);
+const initializeController = (dbPool, redisPool, webSocketService = null, emailService = null) => {
+    adminController = new AdminController(dbPool, redisPool, webSocketService, emailService);
 };
 
 // All admin routes require authentication and admin role

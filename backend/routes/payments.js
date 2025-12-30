@@ -16,8 +16,8 @@ const router = express.Router();
 // Initialize controller - will be set when routes are mounted
 let paymentController = null;
 
-const initializeController = (dbPool, redisPool) => {
-    paymentController = new PaymentController(dbPool, redisPool);
+const initializeController = (dbPool, redisPool, webSocketService = null, emailService = null) => {
+    paymentController = new PaymentController(dbPool, redisPool, webSocketService, emailService);
 };
 
 // Webhook endpoint (no authentication required, but signature verification)

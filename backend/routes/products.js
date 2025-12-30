@@ -16,8 +16,8 @@ const router = express.Router();
 // Initialize controller - will be set when routes are mounted
 let productController = null;
 
-const initializeController = (dbPool, redisPool) => {
-    productController = new ProductController(dbPool, redisPool);
+const initializeController = (dbPool, redisPool, webSocketService = null, emailService = null) => {
+    productController = new ProductController(dbPool, redisPool, webSocketService, emailService);
 };
 
 // Product routes
